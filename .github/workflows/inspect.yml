@@ -1,0 +1,99 @@
+name: Inspect sherpa-onnx
+on: workflow_dispatch
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Collect facts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set +e
+          OUT="$PWD/sherpa-info.txt"
+          : > "$OUT"
+          sec() { printf '\n\n######## %s ########\n' "$1" >> "$OUT"; }
+
+          sec "latest release and android assets"
+          curl -sL -H "Authorization: Bearer $GH_TOKEN" https://api.github.com/repos/k2-fsa/sherpa-onnx/releases/latest > rel.json
+          python3 - >> "$OUT" 2>&1 <<'PY'
+          import json
+          d = json.load(open("rel.json"))
+          print("tag:", d.get("tag_name"))
+          for a in d.get("assets", []):
+              n = a["name"].lower()
+              if "android" in n or n.endswith(".aar"):
+                  print(a["name"], a["size"], a["browser_download_url"])
+          PY
+
+          sec "clone source"
+          git clone --depth 1 https://github.com/k2-fsa/sherpa-onnx.git src >> "$OUT" 2>&1
+
+          sec "kotlin api files"
+          find src -name "KeywordSpotter*.kt" -o -name "OnlineStream.kt" -o -name "FeatureConfig.kt" -o -name "OnlineRecognizer.kt" >> "$OUT" 2>&1
+          for f in KeywordSpotter.kt OnlineStream.kt FeatureConfig.kt; do
+            p=$(find src -name "$f" | head -n 1)
+            sec "FILE $p"
+            head -n 260 "$p" >> "$OUT" 2>&1
+          done
+          p=$(find src -name OnlineRecognizer.kt | head -n 1)
+          sec "FILE $p (model config classes)"
+          grep -n -A 40 -E "^data class (OnlineModelConfig|OnlineTransducerModelConfig)" "$p" | head -n 160 >> "$OUT" 2>&1
+
+          sec "android kws demo files"
+          find src/android -ipath "*kws*" -type f | head -n 60 >> "$OUT" 2>&1
+          k=$(find src/android -ipath "*kws*" -name "MainActivity.kt" | head -n 1)
+          sec "FILE $k"
+          head -n 300 "$k" >> "$OUT" 2>&1
+          kg=$(find src/android -ipath "*kws*" -name "build.gradle*" | grep app | head -n 1)
+          sec "FILE $kg"
+          cat "$kg" >> "$OUT" 2>&1
+
+          sec "android library files from release"
+          for pat in "android.tar.bz2" ".aar"; do
+            url=$(python3 -c "
+          import json
+          d=json.load(open('rel.json'))
+          for a in d.get('assets',[]):
+              if a['name'].lower().endswith('$pat') and 'jni' not in a['name'].lower().replace('-jniLibs',''):
+                  print(a['browser_download_url']); break
+          ")
+            echo "pattern $pat -> $url" >> "$OUT"
+            if [ -n "$url" ]; then
+              curl -sL -o "lib.$pat" "$url"
+              ls -l "lib.$pat" >> "$OUT" 2>&1
+              case "$pat" in
+                *tar.bz2) tar tjf "lib.$pat" | head -n 40 >> "$OUT" 2>&1 ;;
+                *) unzip -l "lib.$pat" | head -n 60 >> "$OUT" 2>&1 ;;
+              esac
+            fi
+          done
+
+          sec "keyword model and tokenization"
+          pip install sherpa-onnx sentencepiece >> "$OUT" 2>&1
+          M=sherpa-onnx-kws-zipformer-gigaspeech-3.3M-2024-01-01
+          curl -sL -O https://github.com/k2-fsa/sherpa-onnx/releases/download/kws-models/$M.tar.bz2
+          tar xjf $M.tar.bz2
+          ls -l $M >> "$OUT" 2>&1
+          printf 'HEY HELPER :1.0 #0.25\nHEY HELPER :2.0 #0.3\nHELLO HELPER :1.5 #0.3\n' > raw.txt
+          sherpa-onnx-cli text2token --tokens $M/tokens.txt --tokens-type bpe --bpe-model $M/bpe.model raw.txt keywords.txt >> "$OUT" 2>&1
+          echo "--- keywords.txt" >> "$OUT"
+          cat keywords.txt >> "$OUT" 2>&1
+          echo "--- model README" >> "$OUT"
+          cat $M/README.md >> "$OUT" 2>&1
+          wc -c "$OUT"
+      - name: Show in summary
+        run: |
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -c 100000 sherpa-info.txt >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sherpa-info
+          path: sherpa-info.txtl
