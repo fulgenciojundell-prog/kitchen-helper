@@ -10,7 +10,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - run: unzip -q "*.zip"
+      - name: Extract project
+        run: unzip -q "*.zip"
 
       - uses: actions/setup-node@v4
         with:
@@ -28,20 +29,23 @@ jobs:
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install click
+          python -m pip install click pypinyin
 
       - name: Build wake-word APK
         working-directory: kitchen-tools-android
         run: bash wakeword/ci-build.sh
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload build log
         if: always()
+        uses: actions/upload-artifact@v4
         with:
           name: wakeword-build-log
           path: kitchen-tools-android/build.log
+          if-no-files-found: warn
 
-      - uses: actions/upload-artifact@v4
+      - name: Upload APK
         if: success()
+        uses: actions/upload-artifact@v4
         with:
           name: kitchen-tools-wakeword-apk
           path: kitchen-tools-android/android/app/build/outputs/apk/debug/app-debug.apk
